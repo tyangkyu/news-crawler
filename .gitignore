@@ -1,3 +1,5 @@
 run_spacex_news.sh
+run_news_crawler.sh
 news_crawler.sh
 spacex_news.log
+news_crawler.log
