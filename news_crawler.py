@@ -7,7 +7,7 @@ import os
 # ── 설정 ──────────────────────────────────────────────
 SLACK_WEBHOOK_URL = os.environ["SLACK_WEBHOOK_URL"]
 
-KEYWORDS = ["SpaceX", "삼성전자", "SK하이닉스"]
+KEYWORDS = ["SpaceX", "테슬라", "반도체", "엔비디아", "젠슨황", "Nvidia", "삼성전자", "SK하이닉스", "LG전자", "LG CNS"]
 
 # 키워드별 RSS 소스 정의
 # sources 미지정 시 Google News RSS만 사용
