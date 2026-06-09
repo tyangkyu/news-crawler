@@ -3,9 +3,11 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 import json
 import os
+from html import escape
+from urllib.parse import urlparse
 
 # ── 설정 ──────────────────────────────────────────────
-SLACK_WEBHOOK_URL = os.environ["SLACK_WEBHOOK_URL"]
+SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL")
 
 KEYWORDS = ["애플", "아이폰", "SpaceX", "테슬라", "반도체", "엔비디아", "젠슨황", "Nvidia", "삼성전자", "SK하이닉스", "LG전자", "LG CNS"]
 
@@ -26,6 +28,9 @@ KEYWORD_SOURCES = {
 }
 
 MAX_ITEMS = 5  # 소스별 최대 기사 수
+MAX_RSS_BYTES = 1_000_000
+MAX_FIELD_LENGTH = 300
+ALLOWED_URL_SCHEMES = {"http", "https"}
 
 HEADERS = {
     "User-Agent": (
@@ -35,6 +40,43 @@ HEADERS = {
     )
 }
 # ──────────────────────────────────────────────────────
+
+
+def clean_text(value, max_length=MAX_FIELD_LENGTH):
+    """Slack mrkdwn에 안전하게 넣을 수 있도록 텍스트를 정리."""
+    text = " ".join(str(value or "").split())
+    if len(text) > max_length:
+        text = text[: max_length - 1] + "…"
+    return escape(text, quote=False)
+
+
+def is_safe_url(url):
+    text = str(url or "").strip()
+    if any(ch.isspace() or ch in "<>|" for ch in text):
+        return False
+    parsed = urlparse(text)
+    return parsed.scheme in ALLOWED_URL_SCHEMES and bool(parsed.netloc)
+
+
+def slack_article_link(url, title):
+    safe_title = clean_text(title)
+    if is_safe_url(url):
+        return f"<{url.strip()}|{safe_title}>"
+    return safe_title
+
+
+def require_slack_webhook(webhook_url):
+    if not webhook_url or not is_safe_url(webhook_url):
+        raise RuntimeError("SLACK_WEBHOOK_URL 환경변수에 유효한 Slack Webhook URL을 설정해야 합니다.")
+    return webhook_url
+
+
+def validate_rss_response(response):
+    content_type = response.headers.get("Content-Type", "").lower()
+    if content_type and not any(token in content_type for token in ("xml", "rss", "atom", "text")):
+        raise ValueError(f"RSS가 아닌 응답 Content-Type: {content_type}")
+    if len(response.content) > MAX_RSS_BYTES:
+        raise ValueError(f"RSS 응답이 너무 큽니다: {len(response.content)} bytes")
 
 
 def google_news_rss_url(keyword, lang="ko"):
@@ -62,8 +104,12 @@ def fetch_rss(url, keyword, max_items=MAX_ITEMS):
     """RSS URL에서 keyword 포함 기사를 크롤링."""
     results = []
     try:
+        if not is_safe_url(url):
+            raise ValueError(f"허용되지 않은 RSS URL: {url}")
+
         res = requests.get(url, headers=HEADERS, timeout=10)
         res.raise_for_status()
+        validate_rss_response(res)
         soup = BeautifulSoup(res.content, "xml")
 
         for item in soup.find_all("item"):
@@ -135,15 +181,17 @@ def build_slack_blocks(keyword, articles):
         return blocks
 
     for i, a in enumerate(articles, 1):
-        outlet_tag = f"  `{a['outlet']}`" if a.get("outlet") else ""
-        source_tag = f"  — _{a.get('source', '')}_"
+        article_link = slack_article_link(a.get("link"), a.get("title"))
+        outlet_tag = f"  `{clean_text(a['outlet'], 80)}`" if a.get("outlet") else ""
+        source_tag = f"  — _{clean_text(a.get('source', ''), 80)}_"
+        date = clean_text(a.get("date", "날짜 없음"), 80)
         blocks.append({
             "type": "section",
             "text": {
                 "type": "mrkdwn",
                 "text": (
-                    f"*{i}. <{a['link']}|{a['title']}>*\n"
-                    f"🗓 {a['date']}{outlet_tag}{source_tag}"
+                    f"*{i}. {article_link}*\n"
+                    f"🗓 {date}{outlet_tag}{source_tag}"
                 ),
             },
         })
@@ -155,6 +203,7 @@ def build_slack_blocks(keyword, articles):
 def send_to_slack(blocks, webhook_url=SLACK_WEBHOOK_URL):
     payload = {"blocks": blocks}
     try:
+        webhook_url = require_slack_webhook(webhook_url)
         res = requests.post(
             webhook_url,
             data=json.dumps(payload),
@@ -164,7 +213,7 @@ def send_to_slack(blocks, webhook_url=SLACK_WEBHOOK_URL):
         if res.status_code == 200:
             print("  → Slack 발송 성공")
         else:
-            print(f"  → Slack 발송 실패: {res.status_code} {res.text}")
+            print(f"  → Slack 발송 실패: {res.status_code} {res.text[:200]}")
     except Exception as e:
         print(f"  → Slack 발송 오류: {e}")
 
